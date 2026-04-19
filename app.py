@@ -17,8 +17,8 @@ warnings.filterwarnings("ignore")
 
 # ─── Page Config ─────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="OLIVE — Budget Optimization Platform",
-    page_icon="🫒",
+    page_title="BudgetIQ — Budget Optimization Platform",
+    page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -387,11 +387,12 @@ def main():
     latest_filtered = filtered_df[filtered_df["year"] == filtered_df["year"].max()]
 
     # ── TABS ─────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🎯 Budget Allocation",
         "📊 Spending vs Allocation",
         "🔄 Before / After",
         "🧠 Why This Allocation?",
+        "🧪 What-If Simulator",
     ])
 
     # ═════════════════════════════════════════════════════════
@@ -709,8 +710,8 @@ def main():
                     )
 
             # Prophet forecasts
-            st.markdown("#### 🔮 Prophet Need-Index Forecasts (2025)")
-            with st.spinner("Running Prophet forecasts..."):
+            st.markdown("#### 🔮 Need-Index Forecasts (2025)")
+            with st.spinner("Running forecasts..."):
                 state_forecasts, forecast_df = run_prophet(df)
 
             if selected_state in state_forecasts:
@@ -818,6 +819,220 @@ def main():
                     render_metric_card(val, label)
                 if i == 3:
                     prof_cols = st.columns(4)
+
+    # ═════════════════════════════════════════════════════════
+    # TAB 5: WHAT-IF SIMULATOR
+    # ═════════════════════════════════════════════════════════
+    with tab5:
+        st.markdown('<div class="section-header">🧪 What-If Budget Simulator</div>',
+                    unsafe_allow_html=True)
+        st.caption(
+            "Manually adjust sector budgets and instantly see how changes affect "
+            "predicted welfare, satisfaction, and the remaining budget for other sectors."
+        )
+
+        # Compute historical averages for default slider values
+        hist_avg = {}
+        for s_key, s_col in [("Healthcare", "health_alloc_cr"),
+                              ("Education", "education_alloc_cr"),
+                              ("Agriculture", "agriculture_alloc_cr"),
+                              ("Infrastructure", "infrastructure_alloc_cr"),
+                              ("Water", "water_alloc_cr"),
+                              ("Energy", "energy_alloc_cr")]:
+            hist_avg[s_key] = round(latest_filtered[s_col].mean(), 1) if s_col in latest_filtered.columns else 100.0
+
+        st.markdown("#### 🎚️ Set Your Custom Budget")
+        st.markdown(f"**Total budget envelope: ₹{total_budget:,} Cr**")
+        st.markdown("")
+
+        # Sliders for each sector in 2-column layout
+        sim_alloc = {}
+        slider_cols_row1 = st.columns(3)
+        slider_cols_row2 = st.columns(3)
+        sector_list = ["Healthcare", "Education", "Agriculture", "Infrastructure", "Water", "Energy"]
+        sector_colors_emoji = ["🏥", "📚", "🌾", "🏗️", "💧", "⚡"]
+
+        for i, (sector, emoji) in enumerate(zip(sector_list, sector_colors_emoji)):
+            col = slider_cols_row1[i] if i < 3 else slider_cols_row2[i - 3]
+            with col:
+                default_val = min(int(hist_avg.get(sector, 100)), total_budget)
+                sim_alloc[sector] = st.slider(
+                    f"{emoji} {sector} (₹ Cr)",
+                    min_value=0,
+                    max_value=total_budget,
+                    value=default_val,
+                    step=10,
+                    key=f"whatif_{sector}",
+                )
+
+        # Budget math
+        total_allocated = sum(sim_alloc.values())
+        remaining = total_budget - total_allocated
+        utilization_pct = (total_allocated / total_budget * 100) if total_budget > 0 else 0
+        over_budget = total_allocated > total_budget
+
+        # Budget status bar
+        st.markdown("---")
+        st.markdown("#### 💰 Budget Status")
+        b1, b2, b3, b4 = st.columns(4)
+        with b1:
+            render_metric_card(f"₹{total_allocated:,.0f} Cr", "Total Allocated")
+        with b2:
+            color_class = "delta-negative" if over_budget else "delta-positive"
+            render_metric_card(
+                f"₹{remaining:,.0f} Cr", "Remaining",
+                delta=remaining,
+            )
+        with b3:
+            render_metric_card(f"{utilization_pct:.1f}%", "Utilization")
+        with b4:
+            render_metric_card(
+                "⚠️ OVER" if over_budget else "✅ OK",
+                "Budget Status"
+            )
+
+        if over_budget:
+            st.error(
+                f"🚨 You are **₹{-remaining:,.0f} Cr over budget!** "
+                f"Reduce allocations by ₹{-remaining:,.0f} Cr to fit within ₹{total_budget:,} Cr."
+            )
+
+        # Allocation distribution chart
+        st.markdown("---")
+        st.markdown("#### 📊 Your Allocation vs Historical")
+
+        sim_labels = list(sim_alloc.keys())
+        sim_values = list(sim_alloc.values())
+        hist_values = [hist_avg.get(s, 0) for s in sim_labels]
+
+        fig_whatif = go.Figure()
+        fig_whatif.add_trace(go.Bar(
+            name="Historical Avg",
+            x=sim_labels, y=hist_values,
+            marker_color="rgba(148, 163, 184, 0.5)",
+            text=[f"₹{v:,.0f}" for v in hist_values],
+            textposition="outside",
+            textfont=dict(size=10),
+        ))
+        fig_whatif.add_trace(go.Bar(
+            name="Your Scenario",
+            x=sim_labels, y=sim_values,
+            marker_color=SECTOR_COLORS_LIST[:6],
+            text=[f"₹{v:,.0f}" for v in sim_values],
+            textposition="outside",
+            textfont=dict(size=10),
+        ))
+        fig_whatif.update_layout(
+            **PLOTLY_LAYOUT,
+            title="Your Custom Allocation vs Historical Average",
+            barmode="group",
+            yaxis_title="Allocation (₹ Cr)",
+            height=420,
+        )
+        st.plotly_chart(fig_whatif, use_container_width=True)
+
+        # Pie chart of custom allocation
+        if total_allocated > 0:
+            fig_whatif_pie = go.Figure(data=[go.Pie(
+                labels=sim_labels,
+                values=sim_values,
+                hole=0.45,
+                marker=dict(colors=SECTOR_COLORS_LIST[:6],
+                            line=dict(color="rgba(15,25,35,0.8)", width=2)),
+                textinfo="label+percent",
+                textfont=dict(size=11),
+            )])
+            fig_whatif_pie.update_layout(
+                **PLOTLY_LAYOUT,
+                title="Your Scenario — Budget Split",
+                height=350,
+                showlegend=False,
+            )
+            st.plotly_chart(fig_whatif_pie, use_container_width=True)
+
+        # Predict impact with XGBoost
+        st.markdown("---")
+        st.markdown("#### 🧠 Predicted Impact of Your Scenario")
+
+        from models import predict_outcomes
+
+        X_whatif = latest_filtered[model_bundle["feature_names"]].copy()
+        whatif_alloc_map = {
+            "health_alloc_cr": sim_alloc["Healthcare"],
+            "education_alloc_cr": sim_alloc["Education"],
+            "agriculture_alloc_cr": sim_alloc["Agriculture"],
+            "infrastructure_alloc_cr": sim_alloc["Infrastructure"],
+            "water_alloc_cr": sim_alloc["Water"],
+            "energy_alloc_cr": sim_alloc["Energy"],
+        }
+        for col, val in whatif_alloc_map.items():
+            if col in X_whatif.columns:
+                X_whatif[col] = val
+
+        whatif_welfare = predict_outcomes(
+            model_bundle["welfare_model"], X_whatif, model_bundle["feature_names"]
+        ).mean()
+        whatif_satisfaction = predict_outcomes(
+            model_bundle["satisfaction_model"], X_whatif, model_bundle["feature_names"]
+        ).mean()
+
+        current_welfare_val = latest_filtered["overall_welfare_score"].mean()
+        current_sat_val = latest_filtered["citizen_satisfaction_score"].mean()
+
+        p1, p2, p3, p4 = st.columns(4)
+        with p1:
+            render_metric_card(
+                f"{whatif_welfare:.1f}", "Predicted Welfare",
+                delta=whatif_welfare - current_welfare_val,
+                delta_pct=(whatif_welfare - current_welfare_val) / current_welfare_val * 100,
+            )
+        with p2:
+            render_metric_card(f"{current_welfare_val:.1f}", "Current Welfare")
+        with p3:
+            render_metric_card(
+                f"{whatif_satisfaction:.2f}", "Predicted Satisfaction",
+                delta=whatif_satisfaction - current_sat_val,
+            )
+        with p4:
+            render_metric_card(f"{current_sat_val:.2f}", "Current Satisfaction")
+
+        # Show comparison with optimized allocation if available
+        if st.session_state.get("optim_result") is not None:
+            st.markdown("---")
+            st.markdown("#### ⚖️ Your Scenario vs AI-Optimized")
+
+            opt_alloc, _, _ = st.session_state["optim_result"]
+            opt_welfare_X = latest_filtered[model_bundle["feature_names"]].copy()
+            for col, s_key in [("health_alloc_cr", "health"), ("education_alloc_cr", "education"),
+                              ("agriculture_alloc_cr", "agriculture"), ("infrastructure_alloc_cr", "infrastructure"),
+                              ("water_alloc_cr", "water"), ("energy_alloc_cr", "energy")]:
+                if col in opt_welfare_X.columns:
+                    opt_welfare_X[col] = opt_alloc.get(s_key, 0)
+
+            opt_welfare_pred = predict_outcomes(
+                model_bundle["welfare_model"], opt_welfare_X, model_bundle["feature_names"]
+            ).mean()
+
+            diff = whatif_welfare - opt_welfare_pred
+            if diff > 0.5:
+                verdict = "🏆 Your scenario **outperforms** the AI-optimized allocation!"
+            elif diff < -0.5:
+                verdict = f"📉 Your scenario is **{abs(diff):.1f} points below** the AI-optimized allocation."
+            else:
+                verdict = "🤝 Your scenario is **on par** with the AI-optimized allocation."
+
+            comp_cols = st.columns(3)
+            with comp_cols[0]:
+                render_metric_card(f"{whatif_welfare:.1f}", "Your Scenario")
+            with comp_cols[1]:
+                render_metric_card(f"{opt_welfare_pred:.1f}", "AI-Optimized")
+            with comp_cols[2]:
+                render_metric_card(
+                    f"{diff:+.1f}", "Difference",
+                    delta=diff,
+                )
+
+            st.markdown(verdict)
 
 
 if __name__ == "__main__":
